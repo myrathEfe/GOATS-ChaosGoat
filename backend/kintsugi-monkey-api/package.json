@@ -1,0 +1,15 @@
+{
+  "name": "kintsugi-monkey-api",
+  "version": "1.0.0",
+  "description": "Chaos engineering and Gemini analysis API for Kintsugi Monkey Banking.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  }
+}

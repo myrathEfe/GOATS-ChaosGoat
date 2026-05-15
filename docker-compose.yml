@@ -1,0 +1,59 @@
+services:
+  kintsugi-monkey-api:
+    build: ./backend/kintsugi-monkey-api
+    container_name: kintsugi-monkey-api
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
+      ACCOUNT_SERVICE_URL: http://account-service:4001
+      TRANSACTION_SERVICE_URL: http://transaction-service:4002
+      FRAUD_CHECK_SERVICE_URL: http://fraud-check-service:4003
+      NOTIFICATION_SERVICE_URL: http://notification-service:4004
+      FRAUD_CHECK_CONTAINER_NAME: kintsugi-fraud-check-service
+      DATABASE_PATH: /app/data/kintsugi-monkey.db
+    volumes:
+      - ./backend/kintsugi-monkey-api/data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - account-service
+      - transaction-service
+      - fraud-check-service
+      - notification-service
+
+  account-service:
+    build: ./backend/account-service
+    container_name: kintsugi-account-service
+    ports:
+      - "4001:4001"
+    environment:
+      PORT: 4001
+
+  transaction-service:
+    build: ./backend/transaction-service
+    container_name: kintsugi-transaction-service
+    ports:
+      - "4002:4002"
+    environment:
+      PORT: 4002
+      FRAUD_CHECK_SERVICE_URL: http://fraud-check-service:4003
+    depends_on:
+      - fraud-check-service
+
+  fraud-check-service:
+    build: ./backend/fraud-check-service
+    container_name: kintsugi-fraud-check-service
+    ports:
+      - "4003:4003"
+    environment:
+      PORT: 4003
+
+  notification-service:
+    build: ./backend/notification-service
+    container_name: kintsugi-notification-service
+    ports:
+      - "4004:4004"
+    environment:
+      PORT: 4004
