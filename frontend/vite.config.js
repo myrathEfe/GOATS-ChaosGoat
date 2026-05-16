@@ -15,4 +15,10 @@ export default defineConfig({
     noDiscovery: true,
     include: [],
   },
+  preview: {
+    historyApiFallback: true,
+  },
+  build: {
+    rollupOptions: {},
+  },
 });
