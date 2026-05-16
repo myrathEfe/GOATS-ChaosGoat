@@ -5,28 +5,45 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
 
 function buildGeminiPrompt(payload) {
-  return `Sen, bir bankacılık mikroservis sistemi için kıdemli bir SRE (Site Reliability Engineer) ve dayanıklılık analistisin.
+  const riskProfile = payload.risk_profile || {};
+  const computedScore = riskProfile.score ?? null;
+  const computedLevel = riskProfile.level ?? null;
+  const metrics = riskProfile.metrics || [];
 
-Aşağıdakileri alacaksın:
-1. Kaos deneyi meta verileri
-2. İstek / gecikme metrikleri
-3. Bağımlılık topolojisi etkisi
-4. Deterministik risk modeli çıktısı
+  // Anahtar metrikleri özet olarak çıkar
+  const mttr = metrics.find(m => m.name === "downtime");
+  const failureRate = metrics.find(m => m.name === "failure_rate");
+  const blastRadius = metrics.find(m => m.name === "blast_radius");
+  const safeDeg = metrics.find(m => m.name === "safe_degradation_relief");
 
-Görevin, geliştiriciye yönelik Türkçe öneriler üretmektir.
+  const metricSummary = computedScore !== null ? `
+DETERMINISTIK RİSK SKORU (riskModel.js çıktısı):
+  - Hesaplanan Skor: ${computedScore.toFixed(1)} / 100
+  - Eşik Değerleri: DÜŞÜK < 32, ORTA 32-62, YÜKSEK > 62
+  - Model Kararı: ${computedLevel}
+  - MTTR: ${mttr?.rawValue || "?"} (Normalize: ${mttr?.normalizedValue?.toFixed(0) || "?"})
+  - Hata Oranı: ${failureRate?.rawValue || "0%"} (Normalize: ${failureRate?.normalizedValue?.toFixed(0) || "0"})
+  - Blast Radius: ${blastRadius?.rawValue || 0} servis etkilendi
+  - Safe Degradation: ${safeDeg?.rawValue || "pasif"}
+` : "";
 
-Kurallar:
-- Sistemi değiştirme.
-- Herhangi bir düzeltme uyguladığını iddia etme.
-- Açıkça istenmedikçe kod üretme.
-- Açıklamanı uygulanan kaos metoduna göre sınıflandır.
-- Önem derecesi hakkında akıl yürütürken sağlanan deterministik risk metriklerini kullan.
-- Çıktıyı bir hackathon demosundan sonra dayanıklılık olayını inceleyen mühendisler için faydalı tut.
-- TÜM ALANLARI TÜRKÇE YAZ. Hiçbir alanda İngilizce kullanma.
-- next_experiments ve developer_recommendations listelerindeki tüm maddeler Türkçe olmalıdır.
-- kintsugi_lesson alanı mutlaka Türkçe olmalıdır.
+  return `Sen, bir bankacılık mikroservis sistemi için kıdemli bir SRE analistisin. Google SRE, Netflix Chaos Engineering ve AWS Resilience Hub metodolojilerini kullanıyorsun.
 
-Yalnızca geçerli JSON döndür:
+${metricSummary}
+
+RİSK SEVİYESİ KILAVUZU (büyük şirketlerin kullandığı kriterler):
+- DÜŞÜK: Kurtarma < 30s VE fallback çalıştı VE hata oranı < %20 VE yalnızca 1 servis etkilendi VE düşük/orta kritiklik → Sistem tasarlandığı gibi davrandı.
+- ORTA: Kurtarma 30s-3dk VEYA fallback tetiklendi ama tam değil VEYA hata oranı %20-60 VEYA 2 servis etkilendi → İyileştirme alanı var.
+- YÜKSEK: Kurtarma > 3dk VEYA fallback yok/başarısız VEYA hata oranı > %60 VEYA 3+ kritik servis etkilendi → Acil aksiyon gerekli.
+
+ÖNEMLİ: Deterministik skor ${computedLevel} gösteriyorsa sen de aynı seviyeyi kullan. Veriler DÜŞÜK risk gösteriyorsa DÜŞÜK yaz — kaos deneyi olduğu için otomatik olarak YÜKSEK yazma.
+
+HATA OLASILĞI KURALLARI (her deneye özgü, gerçekçi):
+- current_failure_probability: Gözlemlenen metriklere göre (MTTR, hata oranı, blast radius, fallback kalitesi) bu sistem bileşeninin benzer koşullarda arıza verme olasılığı. DÜŞÜK risk ise 5-28, ORTA ise 28-60, YÜKSEK ise 60-90 aralığında olmalı.
+- improved_failure_probability: Öneriler uygulandıktan sonra beklenen olasılık. Mevcut değerden en az 12, en fazla 45 puan düşük olmalı.
+- probability_reasoning: Deney verilerini (MTTR=${mttr?.rawValue || "?"}, hata oranı=${failureRate?.rawValue || "0%"}) referans alarak 1-2 cümle Türkçe açıklama.
+
+Tüm alanları TÜRKÇE yaz. Yalnızca geçerli JSON döndür:
 {
   "chaos_method_classification": "",
   "summary": "",
@@ -37,7 +54,10 @@ Yalnızca geçerli JSON döndür:
   "safe_degradation_review": "",
   "developer_recommendations": [],
   "next_experiments": [],
-  "kintsugi_lesson": ""
+  "kintsugi_lesson": "",
+  "current_failure_probability": 0,
+  "improved_failure_probability": 0,
+  "probability_reasoning": ""
 }
 
 Deney yükü:
@@ -77,6 +97,13 @@ function normalizeAnalysis(parsed, rawResponse) {
       ? parsed.next_experiments
       : [],
     kintsugi_lesson: parsed.kintsugi_lesson || "",
+    current_failure_probability: typeof parsed.current_failure_probability === "number"
+      ? Math.min(99, Math.max(1, Math.round(parsed.current_failure_probability)))
+      : null,
+    improved_failure_probability: typeof parsed.improved_failure_probability === "number"
+      ? Math.min(99, Math.max(1, Math.round(parsed.improved_failure_probability)))
+      : null,
+    probability_reasoning: parsed.probability_reasoning || "",
     raw_ai_response: rawResponse
   };
 }
@@ -175,11 +202,60 @@ function buildFallbackAnalysis(payload) {
     ],
     kintsugi_lesson:
       "Bu kırık bize şunu öğretiyor: Güvenli bozunma, sistemin her zaman sağlıklıymış gibi davranmasından çok daha değerlidir. Kırıkları altınla sararak — yani güçlü yedek mekanizmalar inşa ederek — sistem, tek bir noktanın çökmesinin tüm akışı durdurmasını önleyebilir. Gerçek dayanıklılık, hiç kırılmamakta değil, kırılıp hızla toparlanmakta yatar.",
+    current_failure_probability: _calcFallbackCurrentProb(experiment, payload),
+    improved_failure_probability: _calcFallbackImprovedProb(experiment, payload),
+    probability_reasoning: `Kurtarma süresi (${Math.round((experiment.recovery_time_ms || 60000) / 1000)}s) ve deney metrikleri temel alınarak hesaplandı. Önerilen 5 iyileştirme uygulandığında beklenen iyileşme oranı gösterilmektedir.`,
     raw_ai_response: JSON.stringify({
       kaynak: "yedek-analizci",
       guvenli_bozunma: experiment.safe_degradation || SAFE_DEGRADATION_MESSAGE
     })
   };
+}
+
+function _calcFallbackCurrentProb(experiment, payload) {
+  // Google SRE / Netflix metodolojisi tabanlı gerçekçi hesaplama
+  const riskProfile = payload.risk_profile || {};
+  const riskScore = riskProfile.score;
+
+  // Eğer riskModel.js skoru varsa onu kullan (en güvenilir kaynak)
+  if (typeof riskScore === "number") {
+    // Risk skoru 0-100 → olasılık 5-90 aralığına lineer map
+    return Math.min(90, Math.max(5, Math.round(riskScore * 0.88 + 5)));
+  }
+
+  // Fallback: metriklerden hesapla
+  const metrics = payload.service_metrics || [];
+  const recMs = experiment.recovery_time_ms || 60000;
+  const faultType = experiment.fault_type || "service_kill";
+  const totalErrors = metrics.reduce((s, m) => s + (m.error_count || 0), 0);
+  const totalSamples = metrics.reduce((s, m) => s + 5, 0) || 5;
+  const errorRate = totalErrors / totalSamples;
+  const fallbackUsed = metrics.some((m) => m.fallback_used);
+
+  // MTTR tabanlı baz
+  let prob = recMs < 15000 ? 12 : recMs < 30000 ? 22 : recMs < 60000 ? 35
+           : recMs < 120000 ? 50 : recMs < 300000 ? 68 : 82;
+
+  // Hata oranı etkisi
+  prob += Math.round(errorRate * 25);
+
+  // Fallback çalıştıysa anlamlı düşüş (Netflix: "fallback is gold")
+  if (fallbackUsed) prob -= 18;
+
+  // Hata tipi düzeltmesi
+  const adjust = { cascade_kill: +12, service_kill: +5, db_disconnect: +8,
+                   network_delay: -5, cache_disconnect: -8, traffic_surge: -3 };
+  prob += adjust[faultType] || 0;
+
+  return Math.min(90, Math.max(5, Math.round(prob)));
+}
+
+function _calcFallbackImprovedProb(experiment, payload) {
+  const current = _calcFallbackCurrentProb(experiment, payload);
+  const recs = (payload.developer_recommendations?.length || 5);
+  // Her öneri ~3-4 puan iyileşme + baz iyileşme
+  const reduction = Math.min(Math.round(current * 0.42 + recs * 2), 55);
+  return Math.max(5, current - reduction);
 }
 
 module.exports = { analyzeWithGemini, buildFallbackAnalysis };

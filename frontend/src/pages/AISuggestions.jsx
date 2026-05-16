@@ -1,6 +1,211 @@
-import { useEffect, useState } from "react";
-import { Brain, Sparkles, AlertTriangle, Shield, Target, Lightbulb, ChevronDown, ChevronUp, Loader, TrendingUp } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
+import { Brain, Sparkles, AlertTriangle, Shield, Target, Lightbulb, ChevronDown, ChevronUp, Loader, TrendingUp, TrendingDown } from "lucide-react";
 import { api } from "../api";
+
+// ── Risk olasılık hesaplama ───────────────────────────────────────────────────
+function calcRiskProbabilities(trace, experiment) {
+  if (!trace) return null;
+
+  // Gemini'den gelen değerler varsa direkt kullan
+  if (
+    typeof trace.current_failure_probability === "number" &&
+    typeof trace.improved_failure_probability === "number"
+  ) {
+    const current = trace.current_failure_probability;
+    const improved = trace.improved_failure_probability;
+    return {
+      current,
+      improved,
+      reduction: current - improved,
+      fromAI: true,
+      reasoning: trace.probability_reasoning || "",
+    };
+  }
+
+  // Fallback: risk_level → olasılık aralığı eşleme (riskModel.js eşik değerleriyle uyumlu)
+  // LOW < 32, MEDIUM 32-62, HIGH > 62
+  const level = trace.risk_level || "ORTA";
+  const recMs = experiment?.recovery_time_ms || 60000;
+  const recCount = (trace.developer_recommendations || []).length;
+
+  // Her risk seviyesi için gerçekçi aralık merkezi
+  const base = { YÜKSEK: 72, HIGH: 72, ORTA: 44, MEDIUM: 44, DÜŞÜK: 18, LOW: 18 };
+  let current = base[level] ?? 44;
+
+  // MTTR katkısı
+  if (recMs > 300000) current += 14;
+  else if (recMs > 120000) current += 8;
+  else if (recMs > 60000) current += 4;
+  else if (recMs < 15000) current -= 10;
+  else if (recMs < 30000) current -= 5;
+
+  current = Math.min(90, Math.max(5, current));
+  const improvement = Math.min(recCount * 3.5 + 14, 50);
+  const improved = Math.max(5, Math.round(current - improvement));
+
+  return {
+    current: Math.round(current),
+    improved,
+    reduction: Math.round(current - improved),
+    fromAI: false,
+    reasoning: "",
+  };
+}
+
+// ── Apple tarzı Donut Chart ───────────────────────────────────────────────────
+function DonutChart({ percent, color, label, sublabel, size = 160 }) {
+  const [animated, setAnimated] = useState(0);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    let start = null;
+    const duration = 1200;
+    const target = percent;
+    function step(ts) {
+      if (!start) start = ts;
+      const progress = Math.min((ts - start) / duration, 1);
+      const ease = 1 - Math.pow(1 - progress, 3);
+      setAnimated(Math.round(ease * target));
+      if (progress < 1) requestAnimationFrame(step);
+    }
+    const id = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(id);
+  }, [percent]);
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size * 0.38;
+  const stroke = size * 0.12;
+  const circumference = 2 * Math.PI * r;
+  const safeOffset = circumference * (1 - animated / 100);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+      <div style={{ position: "relative", width: size, height: size }}>
+        <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+          {/* Track */}
+          <circle cx={cx} cy={cy} r={r} fill="none"
+            stroke="rgba(255,255,255,0.07)" strokeWidth={stroke}/>
+          {/* Progress */}
+          <circle cx={cx} cy={cy} r={r} fill="none"
+            stroke={color} strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={safeOffset}
+            style={{ transition: "none", filter: `drop-shadow(0 0 6px ${color}80)` }}
+          />
+        </svg>
+        {/* Center text */}
+        <div style={{
+          position: "absolute", inset: 0,
+          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        }}>
+          <span style={{ fontSize: size * 0.22, fontWeight: 800, color, lineHeight: 1 }}>
+            %{animated}
+          </span>
+          <span style={{ fontSize: size * 0.09, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>
+            olasılık
+          </span>
+        </div>
+      </div>
+      <div style={{ textAlign: "center" }}>
+        <p style={{ color: "white", fontWeight: 700, fontSize: 13, marginBottom: 3 }}>{label}</p>
+        <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, lineHeight: 1.4 }}>{sublabel}</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Risk Görselleştirme Kartı ─────────────────────────────────────────────────
+function RiskProbabilityCard({ trace, experiment }) {
+  const probs = calcRiskProbabilities(trace, experiment);
+  if (!probs) return null;
+
+  const currentColor = probs.current >= 60 ? "#ff4d6d" : probs.current >= 35 ? "#f0c040" : "#22d3a0";
+  const improvedColor = probs.improved >= 40 ? "#f0c040" : "#22d3a0";
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.025)",
+      border: "1px solid rgba(255,255,255,0.08)",
+      borderRadius: 16, padding: "28px 24px", marginTop: 20,
+    }}>
+      {/* Başlık */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(240,192,64,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <span style={{ fontSize: 16 }}>📊</span>
+        </div>
+        <div>
+          <p style={{ color: "#f0c040", fontSize: 13, fontWeight: 700, letterSpacing: 0.5 }}>
+            HATA OLASILĞI TAHMİNİ
+          </p>
+          <p style={{ color: "rgba(255,255,255,0.35)", fontSize: 11, marginTop: 1 }}>
+            Mevcut durum ile öneriler uygulandığındaki karşılaştırma
+          </p>
+        </div>
+      </div>
+
+      <div style={{ width: "100%", height: 1, background: "rgba(255,255,255,0.06)", margin: "16px 0" }}/>
+
+      {/* İki grafik yan yana */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-around", gap: 20 }}>
+        <DonutChart
+          percent={probs.current}
+          color={currentColor}
+          label="Mevcut Durum"
+          sublabel={`Öneriler uygulanmadan\n${probs.current >= 60 ? "Yüksek risk" : probs.current >= 35 ? "Orta risk" : "Düşük risk"}`}
+          size={160}
+        />
+
+        {/* Orta ok */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingTop: 50, gap: 8 }}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 6,
+            background: "rgba(34,211,160,0.1)", border: "1px solid rgba(34,211,160,0.25)",
+            borderRadius: 20, padding: "6px 14px",
+          }}>
+            <TrendingDown size={14} color="#22d3a0"/>
+            <span style={{ color: "#22d3a0", fontSize: 13, fontWeight: 700 }}>−%{probs.reduction}</span>
+          </div>
+          <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 10, textAlign: "center" }}>iyileşme</span>
+          <div style={{ fontSize: 20, color: "rgba(255,255,255,0.15)" }}>→</div>
+        </div>
+
+        <DonutChart
+          percent={probs.improved}
+          color={improvedColor}
+          label="Öneriler Uygulandıktan Sonra"
+          sublabel={`${(trace.developer_recommendations || []).length} öneri hayata geçirilirse\n${probs.improved < 20 ? "Güvenli seviye" : probs.improved < 40 ? "Kabul edilebilir risk" : "İzleme gerekli"}`}
+          size={160}
+        />
+      </div>
+
+      {/* Alt açıklama */}
+      <div style={{
+        marginTop: 20, padding: "12px 16px",
+        background: probs.fromAI ? "rgba(74,158,255,0.05)" : "rgba(240,192,64,0.04)",
+        border: `1px solid ${probs.fromAI ? "rgba(74,158,255,0.15)" : "rgba(240,192,64,0.1)"}`,
+        borderRadius: 10,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+          {probs.fromAI ? (
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#4a9eff", background: "rgba(74,158,255,0.15)", padding: "2px 8px", borderRadius: 10 }}>
+              ✦ Gemini Yapay Zeka Tahmini
+            </span>
+          ) : (
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#f0c040", background: "rgba(240,192,64,0.12)", padding: "2px 8px", borderRadius: 10 }}>
+              Yedek Model Tahmini
+            </span>
+          )}
+        </div>
+        <p style={{ color: "rgba(255,255,255,0.55)", fontSize: 11, lineHeight: 1.7 }}>
+          {probs.reasoning ||
+            "Bu tahmin; risk seviyesi, kurtarma süresi ve önerilerin sayısına dayalı bir modeldir. Gerçek iyileşme, önerilerin kalitesine ve uygulanma kapsamına göre değişebilir."}
+        </p>
+      </div>
+    </div>
+  );
+}
 
 const RISK_COLOR = { HIGH: "#ff4d6d", MEDIUM: "#f0c040", LOW: "#22d3a0", CRITICAL: "#c084fc" };
 
@@ -317,6 +522,8 @@ export default function AISuggestions() {
             </div>
             {/* Inline full trace */}
             <TraceCard trace={{ ...analyzeResult, experiment_id: latestCompleted?.id }} defaultOpen={true}/>
+            {/* Risk olasılık görselleştirmesi */}
+            <RiskProbabilityCard trace={analyzeResult} experiment={latestCompleted}/>
           </div>
         )}
       </div>

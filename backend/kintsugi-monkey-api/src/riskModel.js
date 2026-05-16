@@ -12,9 +12,13 @@ const METHOD_SEVERITY = {
   partial_failure: 0.84
 };
 
+// Kalibrasyon: Google SRE Error Budget + Netflix Resilience Score yaklaşımı
+// LOW  < 32 : Fallback çalıştı, kurtarma hızlı, blast radius dar
+// MEDIUM 32–62: Bozunma gözlemlendi, kurtarma kabul edilebilir
+// HIGH > 62 : Tam kesinti, uzun kurtarma, geniş etki
 const RISK_THRESHOLDS = {
-  LOW: 25,
-  MEDIUM: 55
+  LOW: 32,
+  MEDIUM: 62
 };
 
 function clamp(value, min, max) {
@@ -133,91 +137,111 @@ function computeRiskProfile(experiment, detail) {
   const methodSeverity = METHOD_SEVERITY[experiment.fault_type] || 0.5;
 
   const metrics = [
+    // MTTR — Google SRE: kurtarma süresi kritik metrik
+    // < 15s mükemmel, 15-60s iyi, 60-300s kabul edilebilir, > 300s sorunlu
     buildRiskMetric(
       "downtime",
-      "Downtime / Recovery",
+      "MTTR (Kurtarma Süresi)",
       `${Math.round(recoveryTimeMs / 1000)}s`,
-      clamp((recoveryTimeMs / 15000) * 100, 0, 100),
-      0.16,
-      "Longer recovery windows increase operational and customer impact."
+      recoveryTimeMs === 0 ? 0 : clamp(
+        recoveryTimeMs < 15000  ? 8 :
+        recoveryTimeMs < 30000  ? 18 :
+        recoveryTimeMs < 60000  ? 32 :
+        recoveryTimeMs < 120000 ? 50 :
+        recoveryTimeMs < 300000 ? 70 : 90,
+        0, 100
+      ),
+      0.20,
+      "MTTR: Ortalama kurtarma süresi. Kısa kurtarma dayanıklılığı gösterir."
     ),
+    // Kritiklik — düşük kritiklik servislerde risk doğal olarak düşer
     buildRiskMetric(
       "criticality",
-      "Service Criticality",
+      "Servis Kritikliği",
       targetService?.criticality || "MEDIUM",
-      criticalityScore * 100,
-      0.14,
-      "Critical services contribute more heavily to final risk."
+      criticalityScore * 85,   // max 85 olacak şekilde normalize
+      0.12,
+      "Kritik servisler nihai risk skoruna daha fazla katkıda bulunur."
     ),
+    // Blast radius — Netflix: etkilenen servis yüzdesi
     buildRiskMetric(
       "blast_radius",
-      "Affected Services",
+      "Etki Alanı (Blast Radius)",
       blastRadiusCount,
-      clamp((blastRadiusCount / Math.max(1, totalServices - 1)) * 120, 0, 100),
+      blastRadiusCount === 0 ? 5 :
+      clamp((blastRadiusCount / Math.max(1, totalServices - 1)) * 100, 0, 100),
       0.18,
-      "More impacted services expand the blast radius."
+      "Etkilenen servis sayısı arttıkça patlama yarıçapı genişler."
     ),
+    // Hata oranı — AWS: başarısız istek yüzdesi
     buildRiskMetric(
       "failure_rate",
-      "Failed Request Rate",
+      "Hata Oranı (%)",
       requestCount ? `${Math.round((failedCount / requestCount) * 100)}%` : "0%",
-      requestCount ? normalizeRate(failedCount / requestCount, 1.65) : 0,
-      0.22,
-      "A higher outright failure rate indicates less graceful degradation.",
+      requestCount > 0 ? normalizeRate(failedCount / requestCount, 1.5) : 0,
+      0.20,
+      "Yüksek hata oranı, graceful degradation eksikliğine işaret eder.",
       requestCount > 0
     ),
+    // Bozunma oranı — fallback'e düşen istek yüzdesi
     buildRiskMetric(
       "degradation_rate",
-      "Degraded Request Rate",
+      "Bozunma Oranı (%)",
       requestCount ? `${Math.round((degradedCount / requestCount) * 100)}%` : "0%",
-      requestCount ? normalizeRate(degradedCount / requestCount, 1.35) : 0,
-      0.14,
-      "Shows how often users were pushed into fallback or review flows.",
+      requestCount > 0 ? normalizeRate(degradedCount / requestCount, 1.2) : 0,
+      0.12,
+      "Kullanıcıların fallback akışına yönlendirilme oranı.",
       requestCount > 0
     ),
+    // P95 gecikme — SLO ihlal göstergesi
     buildRiskMetric(
       "latency_p95",
-      "P95 Latency",
+      "P95 Gecikme",
       `${Math.round(p95LatencyMs)}ms`,
-      clamp((p95LatencyMs / 1800) * 100, 0, 100),
-      0.1,
-      "High tail latency usually appears before a visible outage.",
+      clamp((p95LatencyMs / 2000) * 100, 0, 100),
+      0.08,
+      "Kuyruk gecikmesi görünür kesintiden önce ortaya çıkar.",
       p95LatencyMs > 0 || averageLatencyMs > 0
     ),
+    // Bağımlılık zinciri derinliği
     buildRiskMetric(
       "dependency_depth",
-      "Dependency Chain Depth",
+      "Bağımlılık Zinciri Derinliği",
       chainDepth,
-      clamp((chainDepth / 3) * 100, 0, 100),
-      0.08,
-      "Deeper chains amplify downstream propagation risk."
+      clamp((chainDepth / 4) * 100, 0, 100),
+      0.06,
+      "Derin zincirler aşağı akış yayılım riskini artırır."
     ),
+    // Kaos metodu şiddeti
     buildRiskMetric(
       "method_severity",
-      "Chaos Method Severity",
+      "Kaos Metodu Şiddeti",
       experiment.fault_type,
       methodSeverity * 100,
-      0.08,
-      "Some injected failures are inherently more severe than others."
+      0.06,
+      "Bazı enjekte edilen arızalar doğası gereği daha şiddetlidir."
     ),
+    // Eşzamanlı hedef sayısı
     buildRiskMetric(
       "simultaneous_targets",
-      "Simultaneous Target Count",
+      "Eşzamanlı Hedef Sayısı",
       targetServices.length,
       clamp((targetServices.length / 3) * 100, 0, 100),
-      0.1,
-      "Breaking several services at once should accelerate the risk score.",
+      0.08,
+      "Birden fazla servisi aynı anda kırmak risk skorunu hızlandırır.",
       targetServices.length > 0
     )
   ];
 
+  // Safe degradation — çalışan fallback riski önemli ölçüde düşürür
+  // Netflix: "Fallback is gold" — iyi bir fallback LOW riske kapı açmalı
   const safeDegradationMetric = buildRiskMetric(
     "safe_degradation_relief",
-    "Safe Degradation Relief",
-    safeDegradation ? "active" : "inactive",
-    safeDegradation ? 40 : 0,
-    -0.03,
-    "Effective fallback reduces final risk because the system stayed safe.",
+    "Güvenli Bozunma Kalitesi",
+    safeDegradation ? "aktif" : "pasif",
+    safeDegradation ? 50 : 0,
+    -0.10,   // Önceki -0.03'ten çok daha etkili
+    "Etkin fallback, sistem güvenli kaldığı için nihai riski düşürür.",
     safeDegradation
   );
 

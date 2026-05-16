@@ -75,48 +75,77 @@ export default function Reports() {
       try {
         const exps = await api.experiments();
         setExperiments(exps || []);
-        const completed = (exps || []).filter((e) => e.status === "completed" && e.recovery_time_ms);
+
+        // Kritiklik ağırlıkları (riskModel.js ile uyumlu)
+        const WEIGHTS = { HIGH: 1.5, MEDIUM: 1.0, LOW: 0.5, CRITICAL: 2.0 };
+
+        // risk_score alanını kullanan servis bazlı hesaplama
+        // Resilience = 100 - ağırlıklı_ortalama_risk_skoru
+        const serviceNames = [...new Set((exps || []).map((e) => e.target_service).filter(Boolean))];
+
+        const SERVICE_CRITICALITY = {
+          "account-service": "HIGH", "transaction-service": "HIGH",
+          "fraud-check-service": "HIGH", "limit-service": "HIGH",
+          "beneficiary-service": "HIGH", "compliance-service": "HIGH",
+          "notification-service": "LOW", "risk-profile-service": "MEDIUM",
+        };
+
+        const byService = Object.fromEntries(
+          serviceNames.map((name) => {
+            const rel = (exps || []).filter((e) => e.target_service === name && e.risk_score != null);
+            if (!rel.length) return [name, { latest: null, average: null, count: 0 }];
+            const latest = Math.round(100 - (rel[0].risk_score || 0));
+            const avg = Math.round(100 - rel.reduce((s, e) => s + (e.risk_score || 0), 0) / rel.length);
+            return [name, { latest, average: avg, count: rel.length, level: rel[0].risk_level }];
+          })
+        );
+
+        // Ağırlıklı sistem skoru
+        const withScore = (exps || []).filter((e) => e.risk_score != null);
+        let weightedSum = 0, weightTotal = 0;
+        withScore.forEach((e) => {
+          const w = WEIGHTS[SERVICE_CRITICALITY[e.target_service]] || 1.0;
+          weightedSum += (100 - e.risk_score) * w;
+          weightTotal += w;
+        });
+        const systemScore = weightTotal > 0 ? Math.round(weightedSum / weightTotal) : 0;
+
+        const levelCounts = { LOW: 0, MEDIUM: 0, HIGH: 0 };
+        withScore.forEach((e) => { levelCounts[e.risk_level] = (levelCounts[e.risk_level] || 0) + 1; });
+
         setSummary({
-          system_score: completed.length > 0 ? Math.round(completed.reduce((s, e) => s + Math.min(100, Math.round(100 * (1 - Math.min(e.recovery_time_ms / 300000, 1)))), 0) / completed.length) : 0,
+          system_score: systemScore,
           total_experiments: (exps || []).length,
-          by_service: Object.fromEntries(
-            [...new Set((exps || []).map((e) => e.target_service))].map((name) => {
-              const rel = (exps || []).filter((e) => e.target_service === name && e.recovery_time_ms);
-              const avg = rel.length > 0 ? Math.round(rel.reduce((s, e) => s + Math.min(100, Math.round(100 * (1 - Math.min(e.recovery_time_ms / 300000, 1)))), 0) / rel.length) : 0;
-              return [name, { latest: avg, average: avg, count: rel.length }];
-            })
-          ),
+          level_counts: levelCounts,
+          avg_risk: weightTotal > 0 ? Math.round(100 - systemScore) : 0,
+          by_service: byService,
         });
       } catch (_) {}
       setLoading(false);
     })();
   }, []);
 
-  // Derive scores from experiments (recovery time based resilience score)
-  const derivedScores = experiments
-    .filter((e) => e.status === "completed" && e.recovery_time_ms != null)
-    .map((e) => {
-      const recMs = e.recovery_time_ms;
-      const recScore = recMs < 10000 ? 25 : recMs < 30000 ? 20 : recMs < 60000 ? 12 : recMs < 180000 ? 6 : 0;
-      const faultMult = { service_kill: 1.0, network_delay: 1.2, packet_loss: 1.3, cpu_stress: 1.4, partial_failure: 1.3, cascade_kill: 1.5 }[e.fault_type] || 1.0;
-      return {
-        name: e.target_service?.split("-")[0] || "?",
-        service_name: e.target_service,
-        fault_type: e.fault_type,
-        score: Math.min(100, Math.round((recScore + 15 + 15 + 10) * faultMult)),
-        recovery_time_ms: recMs,
-      };
-    });
+  // risk_score alanını kullanan doğru chart verisi
+  const chartData = experiments
+    .filter((e) => e.risk_score != null)
+    .slice(0, 10).reverse()
+    .map((e) => ({
+      name: e.target_service?.split("-")[0] || "?",
+      resilience: Math.round(100 - (e.risk_score || 0)),
+      risk: Math.round(e.risk_score || 0),
+      fault_type: e.fault_type,
+      level: e.risk_level,
+    }));
 
-  const chartData = derivedScores.slice(0, 10).reverse();
-
-  const recoveryData = experiments.filter((e) => e.recovery_time_ms).slice(0, 8).reverse().map((e) => ({
-    name: e.target_service?.split("-")[0] || "?",
-    recovery: Math.round((e.recovery_time_ms || 0) / 1000),
-  }));
+  const recoveryData = experiments
+    .filter((e) => e.recovery_time_ms)
+    .slice(0, 8).reverse()
+    .map((e) => ({
+      name: e.target_service?.split("-")[0] || "?",
+      recovery: Math.round((e.recovery_time_ms || 0) / 1000),
+    }));
 
   const navigate = useNavigate();
-  const latestScore = derivedScores[0];
 
   return (
     <div style={{ padding: "24px 32px", maxWidth: 1100, margin: "0 auto" }}>
@@ -132,17 +161,39 @@ export default function Reports() {
           <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
             <GaugeArc score={summary?.system_score || 0}/>
             <div style={{ flex: 1 }}>
-              <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, marginBottom: 16 }}>
-                Toplam deney: {summary?.total_experiments || 0}
+              <p style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, marginBottom: 4, letterSpacing: 0.5 }}>
+                AĞIRLIKLI ORTALAMA DAYANIKLIlık (100 - risk_score)
               </p>
-              {latestScore && (
-                <>
-                  <ScoreBar label="Kurtarma Hızı" value={latestScore.recovery_speed_score} color="#22d3a0"/>
-                  <ScoreBar label="Yedek Kalitesi" value={latestScore.fallback_quality_score} color="#4a9eff"/>
-                  <ScoreBar label="Etki Alanı" value={latestScore.blast_radius_score} color="#f0c040"/>
-                  <ScoreBar label="Tespit Hızı" value={latestScore.detection_speed_score} color="#c084fc"/>
-                </>
+              <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, marginBottom: 14 }}>
+                {summary?.total_experiments || 0} deney · Ort. risk: %{summary?.avg_risk || 0}
+              </p>
+              {/* Risk seviyesi dağılımı */}
+              {summary?.level_counts && (
+                <div style={{ marginBottom: 16 }}>
+                  {[
+                    { label: "DÜŞÜK", key: "LOW", color: "#22d3a0" },
+                    { label: "ORTA",  key: "MEDIUM", color: "#f0c040" },
+                    { label: "YÜKSEK", key: "HIGH", color: "#ff4d6d" },
+                  ].map(({ label, key, color }) => {
+                    const count = summary.level_counts[key] || 0;
+                    const total = Object.values(summary.level_counts).reduce((a, b) => a + b, 0) || 1;
+                    return (
+                      <div key={key} style={{ marginBottom: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.5)" }}>{label}</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, color }}>{count} deney</span>
+                        </div>
+                        <div style={{ height: 5, borderRadius: 3, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${(count / total) * 100}%`, background: color, borderRadius: 3, transition: "width 0.8s ease" }}/>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
+              <p style={{ color: "rgba(255,255,255,0.25)", fontSize: 10, lineHeight: 1.5 }}>
+                Kaynak: riskModel.js · Eşikler: DÜŞÜK&lt;32 · ORTA 32-62 · YÜKSEK&gt;62
+              </p>
             </div>
           </div>
         </div>
@@ -187,10 +238,10 @@ export default function Reports() {
                 <XAxis dataKey="name" tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }} axisLine={false} tickLine={false}/>
                 <YAxis domain={[0, 100]} tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }} axisLine={false} tickLine={false}/>
                 <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: "rgba(255,255,255,0.03)" }}
-                  formatter={(v) => [`${v} puan`, "Skor"]}/>
-                <Bar dataKey="score" radius={[6, 6, 0, 0]}>
+                  formatter={(v, n) => [`${v} puan`, n === "resilience" ? "Dayanıklılık" : "Risk"]}/>
+                <Bar dataKey="resilience" radius={[6, 6, 0, 0]}>
                   {chartData.map((entry, i) => (
-                    <Cell key={i} fill={entry.score >= 70 ? "#22d3a0" : entry.score >= 45 ? "#f0c040" : "#ff4d6d"}/>
+                    <Cell key={i} fill={entry.resilience >= 68 ? "#22d3a0" : entry.resilience >= 38 ? "#f0c040" : "#ff4d6d"}/>
                   ))}
                 </Bar>
               </BarChart>
