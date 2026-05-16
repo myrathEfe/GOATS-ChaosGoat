@@ -1,4 +1,4 @@
-# Chaos Monkey
+# Chaos GOAT
 
 ## Proje Vizyonu
 
@@ -14,7 +14,7 @@ Kısacası Chaos Goat, kontrollü arızaları görünür, ölçülebilir ve tekr
 
 --------------------------------------------------------------------------------------------------------
 
-Kintsugi Monkey Banking is a hackathon chaos engineering playground for a banking microservice system. It now includes chained service dependencies, multiple chaos methods, deterministic risk scoring, and Gemini-based incident analysis.
+Chaos GOAT is a hackathon chaos engineering playground for a banking microservice system. It now includes chained service dependencies, multiple chaos methods, deterministic risk scoring, and Gemini-based incident analysis.
 
 ## Architecture
 
