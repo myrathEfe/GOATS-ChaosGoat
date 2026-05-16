@@ -1,4 +1,18 @@
-# Kintsugi Monkey Banking
+# Chaos Monkey
+
+## Proje Vizyonu
+
+Chaos Goat, Netflix’in Chaos Monkey yaklaşımından esinlenerek geliştirilmiş AI destekli bir Chaos Engineering uygulamasıdır. Chaos Monkey dağıtık sistemlerde kontrollü arızalar oluşturarak sistem dayanıklılığını test etmeye odaklanırken, Chaos Goat bu yaklaşımı gözlemlenebilirlik, incident hafızası ve yapay zeka destekli geliştirici önerileriyle genişletir.
+
+Bu projede mikroservis tabanlı bir test ortamı oluşturduk ve seçilen servisler üzerinde kontrollü kırılmalar meydana getirdik. Bu kırılmaları yalnızca geçici hatalar olarak ele almak yerine; loglar, metrikler, servis bağımlılıkları, recovery süresi, fallback davranışı ve etkilenen servisler üzerinden kayıt altına aldık.
+
+Toplanan veriler Gemini API ile analiz edilerek **Golden Trace** adı verilen geliştirici odaklı bir dayanıklılık raporuna dönüştürülür. Bu rapor; neyin kırıldığını, kırığın sistemde nasıl yayıldığını, hangi mimari zayıflıkların ortaya çıktığını ve geliştiricinin hangi iyileştirmeleri yapabileceğini açıklar.
+
+Chaos Goat’un amacı sistemi otomatik olarak düzeltmek değildir. Amaç, geliştiricinin arızayı daha iyi anlamasını ve daha doğru mimari kararlar almasını sağlamaktır.
+
+Kısacası Chaos Goat, kontrollü arızaları görünür, ölçülebilir ve tekrar kullanılabilir öğrenme kayıtlarına dönüştürerek daha dayanıklı mikroservis sistemleri kurmayı hedefler.
+
+--------------------------------------------------------------------------------------------------------
 
 Kintsugi Monkey Banking is a hackathon chaos engineering playground for a banking microservice system. It now includes chained service dependencies, multiple chaos methods, deterministic risk scoring, and Gemini-based incident analysis.
 
