@@ -5,10 +5,10 @@ import { api } from "../api";
 
 const FLOW_STEPS = [
   { id: "limit",      label: "Limit",        service: "limit-service" },
-  { id: "beneficiary",label: "Lehdar",       service: "beneficiary-service" },
-  { id: "fraud",      label: "Dolandırıcılık",service: "fraud-check-service" },
-  { id: "compliance", label: "Uyumluluk",    service: "compliance-service" },
-  { id: "notify",     label: "Bildirim",     service: "notification-service" },
+  { id: "beneficiary",label: "Beneficiary",       service: "beneficiary-service" },
+  { id: "fraud",      label: "Fraud",service: "fraud-check-service" },
+  { id: "compliance", label: "Compliance",    service: "compliance-service" },
+  { id: "notify",     label: "Notify",     service: "notification-service" },
   { id: "approved",   label: "Tamamlandı",   service: null },
 ];
 
